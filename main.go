@@ -2,12 +2,12 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log"
 	"net"
 	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/miekg/dns"
@@ -26,27 +26,29 @@ type Forwarder struct {
 const localTLD = "local"
 
 func main() {
-	dnsListen := flag.String("listen", ":53", "DNS listen address")
-	tsHostname := flag.String("ts-hostname", "tsdns", "Tailscale hostname")
-	tsStateDir := flag.String("ts-state-dir", "", "Tailscale state directory")
-	homelabZone := flag.String("homelab-zone", "homelab", "Homelab zone used for remapping (for example: homelab)")
-	advertiseRoute := flag.String("advertise-route", "", "CIDR route prefix to advertise to tailnet (for example: 10.42.0.0/24)")
-	tsnetVerbose := flag.Bool("tsverbose", false, "Enable verbose logging for tsnet")
+	dnsListen := envOrDefault("DNS_LISTEN", ":53")
+	tsHostname := envOrDefault("TS_HOSTNAME", "tsdns")
+	tsStateDir := envOrDefault("TS_STATE_DIR", "")
+	homelabZone := envOrDefault("HOMELAB_ZONE", "homelab")
+	advertiseRoute := envOrDefault("ADVERTISE_ROUTE", "")
+	tsnetVerbose, err := envBoolOrDefault("TS_VERBOSE", false)
+	if err != nil {
+		log.Fatalf("invalid TS_VERBOSE value: %v", err)
+	}
 
-	flag.Parse()
 	ctx := context.Background()
-	zone := strings.Trim(strings.ToLower(*homelabZone), ".")
+	zone := strings.Trim(strings.ToLower(homelabZone), ".")
 	if zone == "" {
-		log.Fatalf("invalid -homelab-zone %q", *homelabZone)
+		log.Fatalf("invalid HOMELAB_ZONE %q", homelabZone)
 	}
 
 	ts := &tsnet.Server{
-		Hostname: *tsHostname,
-		Dir:      *tsStateDir,
+		Hostname: tsHostname,
+		Dir:      tsStateDir,
 	}
 
-	if *tsnetVerbose {
-		ts.Logf = log.New(os.Stderr, fmt.Sprintf("[tsnet:%s] ", *tsHostname), log.LstdFlags).Printf
+	if tsnetVerbose {
+		ts.Logf = log.New(os.Stderr, fmt.Sprintf("[tsnet:%s] ", tsHostname), log.LstdFlags).Printf
 	}
 	defer func() {
 		_ = ts.Close()
@@ -56,10 +58,10 @@ func main() {
 		log.Fatalf("tailscale bring-up failed: %v", err)
 	}
 
-	if *advertiseRoute != "" {
-		prefix, err := netip.ParsePrefix(*advertiseRoute)
+	if advertiseRoute != "" {
+		prefix, err := netip.ParsePrefix(advertiseRoute)
 		if err != nil {
-			log.Fatalf("invalid -advertise-route %q: %v", *advertiseRoute, err)
+			log.Fatalf("invalid ADVERTISE_ROUTE %q: %v", advertiseRoute, err)
 		}
 		lc, err := ts.LocalClient()
 		if err != nil {
@@ -93,8 +95,8 @@ func main() {
 
 	dns.HandleFunc(".", forwarder.handleRequest)
 
-	udpServer := &dns.Server{Addr: *dnsListen, Net: "udp"}
-	tcpServer := &dns.Server{Addr: *dnsListen, Net: "tcp"}
+	udpServer := &dns.Server{Addr: dnsListen, Net: "udp"}
+	tcpServer := &dns.Server{Addr: dnsListen, Net: "tcp"}
 
 	errCh := make(chan error, 2)
 	go func() {
@@ -104,13 +106,32 @@ func main() {
 		errCh <- tcpServer.ListenAndServe()
 	}()
 
-	log.Printf("dns forwarder listening on %s (udp/tcp), upstream %s", *dnsListen, upstream)
+	log.Printf("dns forwarder listening on %s (udp/tcp), upstream %s", dnsListen, upstream)
 	if serveErr := <-errCh; serveErr != nil {
 		log.Fatalf("dns server failed: %v", serveErr)
 	}
 
 	_ = udpServer.Shutdown()
 	_ = tcpServer.Shutdown()
+}
+
+func envOrDefault(key, defaultValue string) string {
+	if value, ok := os.LookupEnv(key); ok {
+		return value
+	}
+	return defaultValue
+}
+
+func envBoolOrDefault(key string, defaultValue bool) (bool, error) {
+	value, ok := os.LookupEnv(key)
+	if !ok {
+		return defaultValue, nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("%s=%q (%w)", key, value, err)
+	}
+	return parsed, nil
 }
 
 func defaultSystemResolver() (string, error) {

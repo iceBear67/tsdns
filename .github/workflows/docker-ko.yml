@@ -32,7 +32,13 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Build and push ko base image (Alpine + ping)
+        run: |
+          docker build -f Dockerfile.ko-base -t "${KO_DOCKER_REPO}:ko-base" .
+          docker push "${KO_DOCKER_REPO}:ko-base"
+
       - name: Build and push with short SHA tag
         run: |
           SHORT_SHA="${GITHUB_SHA::8}"
+          export KO_DEFAULTBASEIMAGE="${KO_DOCKER_REPO}:ko-base"
           ko build --bare --platform=linux/amd64,linux/arm64 --tags "${SHORT_SHA}" .
