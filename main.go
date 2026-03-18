@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"os"
 	"strings"
 
 	"github.com/miekg/dns"
@@ -30,6 +31,8 @@ func main() {
 	tsStateDir := flag.String("ts-state-dir", "", "Tailscale state directory")
 	homelabZone := flag.String("homelab-zone", "homelab", "Homelab zone used for remapping (for example: homelab)")
 	advertiseRoute := flag.String("advertise-route", "", "CIDR route prefix to advertise to tailnet (for example: 10.42.0.0/24)")
+	tsnetVerbose := flag.Bool("tsverbose", false, "Enable verbose logging for tsnet")
+
 	flag.Parse()
 	ctx := context.Background()
 	zone := strings.Trim(strings.ToLower(*homelabZone), ".")
@@ -40,6 +43,10 @@ func main() {
 	ts := &tsnet.Server{
 		Hostname: *tsHostname,
 		Dir:      *tsStateDir,
+	}
+
+	if *tsnetVerbose {
+		ts.Logf = log.New(os.Stderr, fmt.Sprintf("[tsnet:%s] ", *tsHostname), log.LstdFlags).Printf
 	}
 	defer func() {
 		_ = ts.Close()
