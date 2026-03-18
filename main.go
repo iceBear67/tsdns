@@ -42,6 +42,35 @@ func main() {
 		log.Fatalf("invalid HOMELAB_ZONE %q", homelabZone)
 	}
 
+	upstream, err := defaultSystemResolver()
+	if err != nil {
+		log.Fatalf("failed to read system resolver: %v", err)
+	}
+
+	forwarder := &Forwarder{
+		upstream:    upstream,
+		homelabZone: zone,
+		// Placeholder for future domain remapping rules.
+		domainRemap: map[string]string{},
+		udpClient:   dns.Client{Net: "udp"},
+		tcpClient:   dns.Client{Net: "tcp"},
+	}
+
+	dns.HandleFunc(".", forwarder.handleRequest)
+
+	udpServer := &dns.Server{Addr: dnsListen, Net: "udp"}
+	tcpServer := &dns.Server{Addr: dnsListen, Net: "tcp"}
+
+	errCh := make(chan error, 2)
+	go func() {
+		errCh <- udpServer.ListenAndServe()
+	}()
+	go func() {
+		errCh <- tcpServer.ListenAndServe()
+	}()
+
+	log.Printf("dns forwarder listening on %s (udp/tcp), upstream %s", dnsListen, upstream)
+
 	ts := &tsnet.Server{
 		Hostname: tsHostname,
 		Dir:      tsStateDir,
@@ -79,40 +108,13 @@ func main() {
 		log.Printf("advertised route prefix to tailnet: %s", prefix)
 	}
 
-	upstream, err := defaultSystemResolver()
-	if err != nil {
-		log.Fatalf("failed to read system resolver: %v", err)
-	}
-
-	forwarder := &Forwarder{
-		upstream:    upstream,
-		homelabZone: zone,
-		// Placeholder for future domain remapping rules.
-		domainRemap: map[string]string{},
-		udpClient:   dns.Client{Net: "udp"},
-		tcpClient:   dns.Client{Net: "tcp"},
-	}
-
-	dns.HandleFunc(".", forwarder.handleRequest)
-
-	udpServer := &dns.Server{Addr: dnsListen, Net: "udp"}
-	tcpServer := &dns.Server{Addr: dnsListen, Net: "tcp"}
-
-	errCh := make(chan error, 2)
-	go func() {
-		errCh <- udpServer.ListenAndServe()
-	}()
-	go func() {
-		errCh <- tcpServer.ListenAndServe()
-	}()
-
-	log.Printf("dns forwarder listening on %s (udp/tcp), upstream %s", dnsListen, upstream)
 	if serveErr := <-errCh; serveErr != nil {
 		log.Fatalf("dns server failed: %v", serveErr)
 	}
 
 	_ = udpServer.Shutdown()
 	_ = tcpServer.Shutdown()
+
 }
 
 func envOrDefault(key, defaultValue string) string {
@@ -198,5 +200,6 @@ func remapHomelabName(name, homelabZone string) (string, bool) {
 		return "", false
 	}
 	mapped := fmt.Sprintf("%s-%s-1.", project, service)
+	log.Println("Remapping", name, "to", mapped)
 	return mapped, true
 }
