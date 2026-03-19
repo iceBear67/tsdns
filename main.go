@@ -42,35 +42,6 @@ func main() {
 		log.Fatalf("invalid HOMELAB_ZONE %q", homelabZone)
 	}
 
-	upstream, err := defaultSystemResolver()
-	if err != nil {
-		log.Fatalf("failed to read system resolver: %v", err)
-	}
-
-	forwarder := &Forwarder{
-		upstream:    upstream,
-		homelabZone: zone,
-		// Placeholder for future domain remapping rules.
-		domainRemap: map[string]string{},
-		udpClient:   dns.Client{Net: "udp"},
-		tcpClient:   dns.Client{Net: "tcp"},
-	}
-
-	dns.HandleFunc(".", forwarder.handleRequest)
-
-	udpServer := &dns.Server{Addr: dnsListen, Net: "udp"}
-	tcpServer := &dns.Server{Addr: dnsListen, Net: "tcp"}
-
-	errCh := make(chan error, 2)
-	go func() {
-		errCh <- udpServer.ListenAndServe()
-	}()
-	go func() {
-		errCh <- tcpServer.ListenAndServe()
-	}()
-
-	log.Printf("dns forwarder listening on %s (udp/tcp), upstream %s", dnsListen, upstream)
-
 	ts := &tsnet.Server{
 		Hostname: tsHostname,
 		Dir:      tsStateDir,
@@ -107,6 +78,43 @@ func main() {
 		}
 		log.Printf("advertised route prefix to tailnet: %s", prefix)
 	}
+
+	upstream, err := defaultSystemResolver()
+	if err != nil {
+		log.Fatalf("failed to read system resolver: %v", err)
+	}
+
+	forwarder := &Forwarder{
+		upstream:    upstream,
+		homelabZone: zone,
+		// Placeholder for future domain remapping rules.
+		domainRemap: map[string]string{},
+		udpClient:   dns.Client{Net: "udp"},
+		tcpClient:   dns.Client{Net: "tcp"},
+	}
+
+	dns.HandleFunc(".", forwarder.handleRequest)
+
+	var udp net.PacketConn
+	if udp, err = ts.ListenPacket("udp", dnsListen); err != nil {
+		log.Fatalf("failed to listen packet conn on: %v", err)
+	}
+	udpServer := &dns.Server{Addr: dnsListen, Net: "udp", PacketConn: udp}
+	var tcp net.Listener
+	if tcp, err = ts.Listen("tcp", dnsListen); err != nil {
+		log.Fatalf("failed to listen: %v", err)
+	}
+	tcpServer := &dns.Server{Addr: dnsListen, Net: "tcp", Listener: tcp}
+
+	errCh := make(chan error, 2)
+	go func() {
+		errCh <- udpServer.ListenAndServe()
+	}()
+	go func() {
+		errCh <- tcpServer.ListenAndServe()
+	}()
+
+	log.Printf("dns forwarder listening on %s (udp/tcp), upstream %s", dnsListen, upstream)
 
 	if serveErr := <-errCh; serveErr != nil {
 		log.Fatalf("dns server failed: %v", serveErr)
