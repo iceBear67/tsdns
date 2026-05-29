@@ -23,14 +23,15 @@ type Forwarder struct {
 	tcpClient   dns.Client
 }
 
-const localTLD = "local"
+var (
+	tsHostname     = envOrDefault("TS_HOSTNAME", "tsdns")
+	tsStateDir     = envOrDefault("TS_STATE_DIR", "")
+	homelabZone    = envOrDefault("HOMELAB_ZONE", "homelab")
+	localTLD       = envOrDefault("HOMELAB_TLD", "local")
+	advertiseRoute = envOrDefault("ADVERTISE_ROUTE", "")
+)
 
 func main() {
-	dnsListen := envOrDefault("DNS_LISTEN", ":53")
-	tsHostname := envOrDefault("TS_HOSTNAME", "tsdns")
-	tsStateDir := envOrDefault("TS_STATE_DIR", "")
-	homelabZone := envOrDefault("HOMELAB_ZONE", "homelab")
-	advertiseRoute := envOrDefault("ADVERTISE_ROUTE", "")
 	tsnetVerbose, err := envBoolOrDefault("TS_VERBOSE", false)
 	if err != nil {
 		log.Fatalf("invalid TS_VERBOSE value: %v", err)
@@ -58,14 +59,15 @@ func main() {
 		log.Fatalf("tailscale bring-up failed: %v", err)
 	}
 
+	lc, err := ts.LocalClient()
+	if err != nil {
+		log.Fatalf("tailscale local client failed: %v", err)
+	}
+
 	if advertiseRoute != "" {
 		prefix, err := netip.ParsePrefix(advertiseRoute)
 		if err != nil {
 			log.Fatalf("invalid ADVERTISE_ROUTE %q: %v", advertiseRoute, err)
-		}
-		lc, err := ts.LocalClient()
-		if err != nil {
-			log.Fatalf("tailscale local client failed: %v", err)
 		}
 		_, err = lc.EditPrefs(ctx, &ipn.MaskedPrefs{
 			Prefs: ipn.Prefs{
@@ -94,7 +96,9 @@ func main() {
 	}
 
 	dns.HandleFunc(".", forwarder.handleRequest)
-
+	ip4, _ := ts.TailscaleIPs()
+	log.Println("My IP4:", ip4.String())
+	dnsListen := ip4.String() + ":53"
 	var udp net.PacketConn
 	if udp, err = ts.ListenPacket("udp", dnsListen); err != nil {
 		log.Fatalf("failed to listen packet conn on: %v", err)
@@ -108,10 +112,10 @@ func main() {
 
 	errCh := make(chan error, 2)
 	go func() {
-		errCh <- udpServer.ListenAndServe()
+		errCh <- udpServer.ActivateAndServe()
 	}()
 	go func() {
-		errCh <- tcpServer.ListenAndServe()
+		errCh <- tcpServer.ActivateAndServe()
 	}()
 
 	log.Printf("dns forwarder listening on %s (udp/tcp), upstream %s", dnsListen, upstream)
